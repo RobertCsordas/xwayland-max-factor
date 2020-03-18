@@ -1,0 +1,365 @@
+diff --git a/hw/xwayland/xwayland-cursor.c b/hw/xwayland/xwayland-cursor.c
+index 66720bcc0..5b7d44189 100644
+--- a/hw/xwayland/xwayland-cursor.c
++++ b/hw/xwayland/xwayland-cursor.c
+@@ -125,6 +125,7 @@ static const struct wl_callback_listener frame_listener = {
+ void
+ xwl_seat_set_cursor(struct xwl_seat *xwl_seat)
+ {
++    struct xwl_screen *xwl_screen = xwl_seat->xwl_screen;
+     struct xwl_cursor *xwl_cursor = &xwl_seat->cursor;
+     PixmapPtr pixmap;
+     CursorPtr cursor;
+@@ -161,8 +162,8 @@ xwl_seat_set_cursor(struct xwl_seat *xwl_seat)
+     wl_pointer_set_cursor(xwl_seat->wl_pointer,
+                           xwl_seat->pointer_enter_serial,
+                           xwl_cursor->surface,
+-                          xwl_seat->x_cursor->bits->xhot,
+-                          xwl_seat->x_cursor->bits->yhot);
++                          xwl_scale_to(xwl_screen, xwl_seat->x_cursor->bits->xhot),
++                          xwl_scale_to(xwl_screen, xwl_seat->x_cursor->bits->yhot));
+     wl_surface_attach(xwl_cursor->surface,
+                       xwl_shm_pixmap_get_wl_buffer(pixmap), 0, 0);
+     wl_surface_damage(xwl_cursor->surface, 0, 0,
+@@ -179,6 +180,7 @@ void
+ xwl_tablet_tool_set_cursor(struct xwl_tablet_tool *xwl_tablet_tool)
+ {
+     struct xwl_seat *xwl_seat = xwl_tablet_tool->seat;
++    struct xwl_screen *xwl_screen = xwl_seat->xwl_screen;
+     struct xwl_cursor *xwl_cursor = &xwl_tablet_tool->cursor;
+     PixmapPtr pixmap;
+     CursorPtr cursor;
+@@ -213,8 +215,8 @@ xwl_tablet_tool_set_cursor(struct xwl_tablet_tool *xwl_tablet_tool)
+     zwp_tablet_tool_v2_set_cursor(xwl_tablet_tool->tool,
+                                   xwl_tablet_tool->proximity_in_serial,
+                                   xwl_cursor->surface,
+-                                  xwl_seat->x_cursor->bits->xhot,
+-                                  xwl_seat->x_cursor->bits->yhot);
++                                  xwl_scale_to(xwl_screen, xwl_seat->x_cursor->bits->xhot),
++                                  xwl_scale_to(xwl_screen, xwl_seat->x_cursor->bits->yhot));
+     wl_surface_attach(xwl_cursor->surface,
+                       xwl_shm_pixmap_get_wl_buffer(pixmap), 0, 0);
+     wl_surface_damage(xwl_cursor->surface, 0, 0,
+diff --git a/hw/xwayland/xwayland-input.c b/hw/xwayland/xwayland-input.c
+index fa46ac3e7..f293df6a3 100644
+--- a/hw/xwayland/xwayland-input.c
++++ b/hw/xwayland/xwayland-input.c
+@@ -373,8 +373,8 @@ pointer_handle_enter(void *data, struct wl_pointer *pointer,
+     DeviceIntPtr dev = xwl_seat->pointer;
+     DeviceIntPtr master;
+     int i;
+-    int sx = wl_fixed_to_int(sx_w);
+-    int sy = wl_fixed_to_int(sy_w);
++    int sx = wl_fixed_to_int(sx_w) * xwl_seat->xwl_screen->global_output_scale;
++    int sy = wl_fixed_to_int(sy_w) * xwl_seat->xwl_screen->global_output_scale;
+     int dx, dy;
+     ScreenPtr pScreen = xwl_seat->xwl_screen->screen;
+     ValuatorMask mask;
+@@ -519,13 +519,14 @@ pointer_handle_motion(void *data, struct wl_pointer *pointer,
+                       uint32_t time, wl_fixed_t sx_w, wl_fixed_t sy_w)
+ {
+     struct xwl_seat *xwl_seat = data;
++    int32_t scale = xwl_seat->xwl_screen->global_output_scale;
+ 
+     if (!xwl_seat->focus_window)
+         return;
+ 
+     xwl_seat->pending_pointer_event.has_absolute = TRUE;
+-    xwl_seat->pending_pointer_event.x = sx_w;
+-    xwl_seat->pending_pointer_event.y = sy_w;
++    xwl_seat->pending_pointer_event.x = sx_w * scale;
++    xwl_seat->pending_pointer_event.y = sy_w * scale;
+ 
+     if (wl_proxy_get_version((struct wl_proxy *) xwl_seat->wl_pointer) < 5)
+         dispatch_pointer_motion_event(xwl_seat);
+@@ -599,7 +600,8 @@ pointer_handle_axis(void *data, struct wl_pointer *pointer,
+         xorg_list_del(&pending->l);
+         free(pending);
+     } else {
+-        valuator_mask_set_double(&mask, index, wl_fixed_to_double(value) / divisor);
++        double scaled_value = wl_fixed_to_double(value);
++        valuator_mask_set_double(&mask, index, scaled_value / divisor);
+     }
+     QueuePointerEvents(xwl_seat->pointer, MotionNotify, 0, POINTER_RELATIVE, &mask);
+ }
+@@ -638,7 +640,7 @@ pointer_handle_axis_discrete(void *data, struct wl_pointer *wl_pointer,
+ 
+     pending->axis = axis;
+     pending->discrete = discrete;
+-
++    
+     xorg_list_add(&pending->l, &xwl_seat->axis_discrete_pending);
+ }
+ 
+@@ -665,12 +667,13 @@ relative_pointer_handle_relative_motion(void *data,
+                                         wl_fixed_t dy_unaccelf)
+ {
+     struct xwl_seat *xwl_seat = data;
++    int32_t scale = xwl_seat->xwl_screen->global_output_scale;
+ 
+     xwl_seat->pending_pointer_event.has_relative = TRUE;
+-    xwl_seat->pending_pointer_event.dx = wl_fixed_to_double(dxf);
+-    xwl_seat->pending_pointer_event.dy = wl_fixed_to_double(dyf);
+-    xwl_seat->pending_pointer_event.dx_unaccel = wl_fixed_to_double(dx_unaccelf);
+-    xwl_seat->pending_pointer_event.dy_unaccel = wl_fixed_to_double(dy_unaccelf);
++    xwl_seat->pending_pointer_event.dx = wl_fixed_to_double(dxf) * scale;
++    xwl_seat->pending_pointer_event.dy = wl_fixed_to_double(dyf) * scale;
++    xwl_seat->pending_pointer_event.dx_unaccel = wl_fixed_to_double(dx_unaccelf) * scale;
++    xwl_seat->pending_pointer_event.dy_unaccel = wl_fixed_to_double(dy_unaccelf) * scale;
+ 
+     if (!xwl_seat->focus_window)
+         return;
+@@ -975,8 +978,8 @@ touch_handle_down(void *data, struct wl_touch *wl_touch,
+ 
+     xwl_touch->window = wl_surface_get_user_data(surface);
+     xwl_touch->id = id;
+-    xwl_touch->x = wl_fixed_to_int(sx_w);
+-    xwl_touch->y = wl_fixed_to_int(sy_w);
++    xwl_touch->x = wl_fixed_to_int(sx_w) * xwl_seat->xwl_screen->global_output_scale;;
++    xwl_touch->y = wl_fixed_to_int(sy_w) * xwl_seat->xwl_screen->global_output_scale;;
+     xorg_list_add(&xwl_touch->link_touch, &xwl_seat->touches);
+ 
+     xwl_touch_send_event(xwl_touch, xwl_seat, XI_TouchBegin);
+@@ -1012,8 +1015,8 @@ touch_handle_motion(void *data, struct wl_touch *wl_touch,
+     if (!xwl_touch)
+         return;
+ 
+-    xwl_touch->x = wl_fixed_to_int(sx_w);
+-    xwl_touch->y = wl_fixed_to_int(sy_w);
++    xwl_touch->x = wl_fixed_to_int(sx_w) * xwl_seat->xwl_screen->global_output_scale;;
++    xwl_touch->y = wl_fixed_to_int(sy_w) * xwl_seat->xwl_screen->global_output_scale;;
+     xwl_touch_send_event(xwl_touch, xwl_seat, XI_TouchUpdate);
+ }
+ 
+@@ -1604,8 +1607,8 @@ tablet_tool_motion(void *data, struct zwp_tablet_tool_v2 *tool,
+     struct xwl_tablet_tool *xwl_tablet_tool = data;
+     struct xwl_seat *xwl_seat = xwl_tablet_tool->seat;
+     int32_t dx, dy;
+-    double sx = wl_fixed_to_double(x);
+-    double sy = wl_fixed_to_double(y);
++    double sx = wl_fixed_to_double(x) * xwl_seat->xwl_screen->global_output_scale;
++    double sy = wl_fixed_to_double(y) * xwl_seat->xwl_screen->global_output_scale;
+ 
+     if (!xwl_seat->tablet_focus_window)
+         return;
+@@ -2588,6 +2591,7 @@ xwl_pointer_warp_emulator_set_fake_pos(struct xwl_pointer_warp_emulator *warp_em
+                                        int x,
+                                        int y)
+ {
++    struct xwl_screen *xwl_screen;
+     struct zwp_locked_pointer_v1 *locked_pointer =
+         warp_emulator->locked_pointer;
+     WindowPtr window;
+@@ -2599,6 +2603,7 @@ xwl_pointer_warp_emulator_set_fake_pos(struct xwl_pointer_warp_emulator *warp_em
+     if (!warp_emulator->xwl_seat->focus_window)
+         return;
+ 
++    xwl_screen = warp_emulator->xwl_seat->xwl_screen;
+     window = warp_emulator->xwl_seat->focus_window->window;
+     if (x >= window->drawable.x ||
+         y >= window->drawable.y ||
+@@ -2607,8 +2612,8 @@ xwl_pointer_warp_emulator_set_fake_pos(struct xwl_pointer_warp_emulator *warp_em
+         sx = x - window->drawable.x;
+         sy = y - window->drawable.y;
+         zwp_locked_pointer_v1_set_cursor_position_hint(locked_pointer,
+-                                                       wl_fixed_from_int(sx),
+-                                                       wl_fixed_from_int(sy));
++                                                       wl_fixed_from_int(xwl_scale_to(xwl_screen, sx)),
++                                                       wl_fixed_from_int(xwl_scale_to(xwl_screen, sy)));
+         wl_surface_commit(warp_emulator->xwl_seat->focus_window->surface);
+     }
+ }
+diff --git a/hw/xwayland/xwayland-output.c b/hw/xwayland/xwayland-output.c
+index aa6f37864..0de3f8fa8 100644
+--- a/hw/xwayland/xwayland-output.c
++++ b/hw/xwayland/xwayland-output.c
+@@ -211,6 +211,9 @@ update_screen_size(struct xwl_output *xwl_output, int width, int height)
+     struct xwl_screen *xwl_screen = xwl_output->xwl_screen;
+     double mmpd;
+ 
++    width = width * xwl_screen->global_output_scale;
++    height = height * xwl_screen->global_output_scale;
++
+     if (xwl_screen->root_clip_mode == ROOT_CLIP_FULL)
+         SetRootClip(xwl_screen->screen, ROOT_CLIP_NONE);
+ 
+@@ -254,6 +257,7 @@ apply_output_change(struct xwl_output *xwl_output)
+     int width = 0, height = 0, has_this_output = 0;
+     RRModePtr randr_mode;
+     Bool need_rotate;
++    int32_t scale = xwl_screen->global_output_scale;
+ 
+     /* Clear out the "done" received flags */
+     xwl_output->wl_output_done = FALSE;
+@@ -271,11 +275,11 @@ apply_output_change(struct xwl_output *xwl_output)
+         mode_height = xwl_output->width;
+     }
+ 
+-    randr_mode = xwayland_cvt(mode_width, mode_height,
++    randr_mode = xwayland_cvt(mode_width*scale, mode_height*scale,
+                               xwl_output->refresh / 1000.0, 0, 0);
+     RROutputSetModes(xwl_output->randr_output, &randr_mode, 1, 1);
+     RRCrtcNotify(xwl_output->randr_crtc, randr_mode,
+-                 xwl_output->x, xwl_output->y,
++                 xwl_output->x * scale, xwl_output->y * scale,
+                  xwl_output->rotation, NULL, 1, &xwl_output->randr_output);
+ 
+     xorg_list_for_each_entry(it, &xwl_screen->output_list, link) {
+@@ -314,9 +318,40 @@ output_handle_done(void *data, struct wl_output *wl_output)
+         apply_output_change(xwl_output);
+ }
+ 
++static void
++output_calc_global_scale( struct xwl_screen *xwl_screen)
++{
++    struct xwl_output *it;
++    int32_t scale = 1;
++
++    if (!xwl_screen->max_factor_rescale)
++        return;
++    if (!xwl_screen->xdg_output_manager)
++        /* multi dpi scaling is only possible when logical sizes are available */
++        return;
++
++    xorg_list_for_each_entry(it, &xwl_screen->output_list, link) {
++        if (it->scale > scale) {
++            scale = it->scale;
++        }
++    }
++    xwl_screen->global_output_scale = scale;
++
++    /* change randr resolutions and positions */
++    xorg_list_for_each_entry(it, &xwl_screen->output_list, link) {
++        apply_output_change(it);
++    }
++}
++
+ static void
+ output_handle_scale(void *data, struct wl_output *wl_output, int32_t factor)
+ {
++    struct xwl_output *xwl_output = data;
++
++    xwl_output->scale = factor;
++
++    /* recalculate global scale */
++    output_calc_global_scale(xwl_output->xwl_screen);
+ }
+ 
+ static const struct wl_output_listener output_listener = {
+@@ -406,6 +441,8 @@ xwl_output_create(struct xwl_screen *xwl_screen, uint32_t id)
+     RROutputSetCrtcs(xwl_output->randr_output, &xwl_output->randr_crtc, 1);
+     RROutputSetConnection(xwl_output->randr_output, RR_Connected);
+ 
++    xwl_output->scale = 1;
++
+     /* We want the output to be in the list as soon as created so we can
+      * use it when binding to the xdg-output protocol...
+      */
+diff --git a/hw/xwayland/xwayland.c b/hw/xwayland/xwayland.c
+index 324c68ccf..1a82466a5 100644
+--- a/hw/xwayland/xwayland.c
++++ b/hw/xwayland/xwayland.c
+@@ -106,6 +106,7 @@ ddxUseMsg(void)
+     ErrorF("-wm fd                 create X client for wm on given fd\n");
+     ErrorF("-listen fd             add give fd as a listen socket\n");
+     ErrorF("-eglstream             use eglstream backend for nvidia GPUs\n");
++    ErrorF("-max-factor-rescale      multi dpi emulation, requires wm support\n");
+ }
+ 
+ int
+@@ -127,6 +128,9 @@ ddxProcessArgument(int argc, char *argv[], int i)
+     else if (strcmp(argv[i], "-eglstream") == 0) {
+         return 1;
+     }
++    else if (strcmp(argv[i], "-max-factor-rescale") == 0) {
++        return 1;
++    }
+ 
+     return 0;
+ }
+@@ -580,7 +584,8 @@ ensure_surface_for_window(WindowPtr window)
+         }
+ 
+         wl_region_add(region, 0, 0,
+-                      window->drawable.width, window->drawable.height);
++                      xwl_scale_to(xwl_screen, window->drawable.width),
++                      xwl_scale_to(xwl_screen, window->drawable.height));
+         wl_surface_set_opaque_region(xwl_window->surface, region);
+         wl_region_destroy(region);
+     }
+@@ -796,6 +801,7 @@ xwl_window_post_damage(struct xwl_window *xwl_window)
+         xwl_glamor_post_damage(xwl_window, pixmap, region);
+ #endif
+ 
++    wl_surface_set_buffer_scale(xwl_window->surface, xwl_screen->global_output_scale);
+     wl_surface_attach(xwl_window->surface, buffer, 0, 0);
+ 
+     /* Arbitrary limit to try to avoid flooding the Wayland
+@@ -1033,6 +1039,12 @@ wm_selection_callback(CallbackListPtr *p, void *data, void *arg)
+     DeleteCallback(&SelectionCallback, wm_selection_callback, xwl_screen);
+ }
+ 
++int
++xwl_scale_to(struct xwl_screen *xwl_screen, int value)
++{
++    return value / (double)xwl_screen->global_output_scale + 0.5;
++}
++
+ static Bool
+ xwl_screen_init(ScreenPtr pScreen, int argc, char **argv)
+ {
+@@ -1062,6 +1074,7 @@ xwl_screen_init(ScreenPtr pScreen, int argc, char **argv)
+ #ifdef XWL_HAS_GLAMOR
+     xwl_screen->glamor = 1;
+ #endif
++    xwl_screen->global_output_scale = 1;
+ 
+     for (i = 1; i < argc; i++) {
+         if (strcmp(argv[i], "-rootless") == 0) {
+@@ -1092,6 +1105,9 @@ xwl_screen_init(ScreenPtr pScreen, int argc, char **argv)
+             ErrorF("xwayland glamor: this build does not have EGLStream support\n");
+ #endif
+         }
++        else if (strcmp(argv[i], "-max-factor-rescale") == 0) {
++            xwl_screen->max_factor_rescale = 1;
++        }
+     }
+ 
+ #ifdef XWL_HAS_GLAMOR
+diff --git a/hw/xwayland/xwayland.h b/hw/xwayland/xwayland.h
+index 0854df456..82a6d1f0d 100644
+--- a/hw/xwayland/xwayland.h
++++ b/hw/xwayland/xwayland.h
+@@ -126,6 +126,7 @@ struct xwl_screen {
+     int rootless;
+     int glamor;
+     int present;
++    int max_factor_rescale;
+ 
+     CreateScreenResourcesProcPtr CreateScreenResources;
+     CloseScreenProcPtr CloseScreen;
+@@ -139,6 +140,8 @@ struct xwl_screen {
+     struct xorg_list seat_list;
+     struct xorg_list damage_window_list;
+ 
++    int32_t global_output_scale;
++
+     int wayland_fd;
+     struct wl_display *display;
+     struct wl_registry *registry;
+@@ -372,12 +375,14 @@ struct xwl_output {
+     struct xwl_screen *xwl_screen;
+     RROutputPtr randr_output;
+     RRCrtcPtr randr_crtc;
+-    int32_t x, y, width, height, refresh;
++    int32_t x, y, width, height, scale, refresh;
+     Rotation rotation;
+     Bool wl_output_done;
+     Bool xdg_output_done;
+ };
+ 
++int xwl_scale_to(struct xwl_screen *xwl_screen, int value);
++
+ void xwl_sync_events (struct xwl_screen *xwl_screen);
+ 
+ Bool xwl_screen_init_cursor(struct xwl_screen *xwl_screen);
